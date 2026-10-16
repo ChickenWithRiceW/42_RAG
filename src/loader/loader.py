@@ -18,18 +18,13 @@ IGNORE_DIRS = re.compile(
     re.VERBOSE)
 
 # TODO: Only allow .py, .txt, .md
-IGNORE_FILES = re.compile(
+ALLOWED_FILES = re.compile(
     r"""
-    \..*                    # hidden files: .env, .DS_Store, .gitignore
-    | .*~                   # editor backups: notes.md~
-    | .*\.(swp|swo|tmp|bak|log|lock)
-    | .*\.py[cod]           # compiled Python: .pyc, .pyo, .pyd
-    | .*\.(so|dll|dylib|exe|o|a)
-    | .*\.(zip|tar|gz|bz2|7z|rar)
-    | .*\.(png|jpe?g|gif|bmp|ico|svg|webp|mp[34]|mov|avi)
-    | Thumbs\.db
-    | package-lock\.json | yarn\.lock | poetry\.lock
-    | CMakeLists.txt
+    (?!\.)                      # never hidden: .env, .gitignore, .DS_Store
+    (
+        .+\.(py|txt|md)         # any .py, .txt or .md file (CMakeLists.txt included)
+      | Makefile | Dockerfile   # extra exact names, optional
+    )
     """,
     re.VERBOSE | re.IGNORECASE,
 )
@@ -48,7 +43,7 @@ def _iter_files(root: Path, extensions: set[str] | None = None) -> Iterator[Path
 
         for name in filenames:
             # Ignore hidden files
-            if IGNORE_FILES.fullmatch(name):
+            if not ALLOWED_FILES.fullmatch(name):
                 continue
             path = Path(dirpath) / name
             if extensions and path.suffix.lower() not in extensions:
@@ -85,6 +80,7 @@ def load_and_split_files(
         rel = p.relative_to(root)
         for c in split.get(p.suffix, generic).create_documents(
                 [text], [{"source": str(p)}]):
+            c.metadata["end_index"] = c.metadata["start_index"] + len(c.page_content)
             c.page_content = f"File: {rel}\n{c.page_content}"
             chunks.append(c)
     return chunks
