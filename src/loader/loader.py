@@ -3,6 +3,7 @@ import os
 from collections.abc import Iterator
 from pathlib import Path
 from langchain_text_splitters import RecursiveCharacterTextSplitter as RCTS, Language
+from langchain_core.documents import Document
 
 # Dirs we ignore.
 IGNORE_DIRS = re.compile(
@@ -53,7 +54,7 @@ def _iter_files(root: Path, extensions: set[str] | None = None) -> Iterator[Path
 
 def load_and_split_files(
     raw_data_path: str, max_chunk_size: int,
-        chunk_overlap: int) -> None:
+        chunk_overlap: int) -> list[Document] | None:
 
     cfg = dict(
         chunk_size=max_chunk_size,
@@ -75,12 +76,18 @@ def load_and_split_files(
             continue
         try:
             text = p.read_text(encoding="utf-8")
-        except (UnicodeDecodeError, OSError):  # binary / unreadable
+        except OSError as e:
+            print(e)
+            return None
+
+        except UnicodeDecodeError as e:
+            print(e)
             continue
+
         rel = p.relative_to(root)
         for c in split.get(p.suffix, generic).create_documents(
                 [text], [{"source": str(p)}]):
-            c.metadata["end_index"] = c.metadata["start_index"] + len(c.page_content)
+            c.metadata["end_index"] = (c.metadata["start_index"] + len(c.page_content))
             c.page_content = f"File: {rel}\n{c.page_content}"
             chunks.append(c)
     return chunks
