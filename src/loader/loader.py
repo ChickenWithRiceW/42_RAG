@@ -59,24 +59,25 @@ def _iter_files(root: Path, extensions: set[str] | None = None
 
 def load_and_split_files(
         raw_data_path: str, max_chunk_size: int,
-        chunk_overlap: int) -> list[Document] | None:
+        chunk_overlap: int) -> list[Document]:
     """Read every allowed file under raw_data_path and split it in chunks.
 
     Python files and Markdown/text files each use their own splitter.
     Each chunk keeps its file path and character span in its metadata.
     """
-    cfg = dict(
+    split = {
+        ext: RCTS.from_language(
+            lang, chunk_size=max_chunk_size,
+            chunk_overlap=chunk_overlap,
+            add_start_index=True)
+        for ext, lang in LANG.items()
+    }
+
+    generic = RCTS(
         chunk_size=max_chunk_size,
         chunk_overlap=chunk_overlap,
         add_start_index=True
     )
-
-    split = {
-        ext: RCTS.from_language(lang, **cfg)
-        for ext, lang in LANG.items()
-    }
-
-    generic = RCTS(**cfg)
     root = Path(raw_data_path)
     chunks = []
 
