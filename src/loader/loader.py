@@ -2,7 +2,8 @@ import re
 import os
 from collections.abc import Iterator
 from pathlib import Path
-from langchain_text_splitters import RecursiveCharacterTextSplitter as RCTS, Language
+from langchain_text_splitters import RecursiveCharacterTextSplitter as RCTS, \
+    Language
 from langchain_core.documents import Document
 
 # Dirs we ignore.
@@ -21,10 +22,10 @@ IGNORE_DIRS = re.compile(
 # TODO: Only allow .py, .txt, .md
 ALLOWED_FILES = re.compile(
     r"""
-    (?!\.)                      # never hidden: .env, .gitignore, .DS_Store
+    (?!\.)
     (
-        .+\.(py|txt|md)         # any .py, .txt or .md file (CMakeLists.txt included)
-      | Makefile | Dockerfile   # extra exact names, optional
+        .+\.(py|txt|md)
+      | Makefile | Dockerfile
     )
     """,
     re.VERBOSE | re.IGNORECASE,
@@ -37,7 +38,8 @@ LANG = {".py": Language.PYTHON,
         ".txt": Language.MARKDOWN}
 
 
-def _iter_files(root: Path, extensions: set[str] | None = None) -> Iterator[Path]:
+def _iter_files(root: Path, extensions: set[str] | None = None
+                ) -> Iterator[Path]:
     for dirpath, dirnames, filenames in os.walk(root):
         # Folder filtering.
         dirnames[:] = [d for d in dirnames if not IGNORE_DIRS.fullmatch(d)]
@@ -87,7 +89,9 @@ def load_and_split_files(
         rel = p.relative_to(root)
         for c in split.get(p.suffix, generic).create_documents(
                 [text], [{"source": str(p)}]):
-            c.metadata["end_index"] = (c.metadata["start_index"] + len(c.page_content))
+            c.metadata["end_index"] = (
+                c.metadata["start_index"] + len(c.page_content))
+
             c.page_content = f"File: {rel}\n{c.page_content}"
             chunks.append(c)
     return chunks

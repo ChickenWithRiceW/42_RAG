@@ -17,8 +17,8 @@ def cli_safe(func):
             return validated(*args, **kwargs)
         except ValidationError as e:
             for err in e.errors():
-                print(f"Error: argument '{err["input"]}': {err['msg']}", file=sys.stderr)
-            sys.exit(2)  # Command line syntax errors
+                print(f"Error: argument '{err["input"]}': {err['msg']}")
+            sys.exit(2)
 
     return wrapper
 
