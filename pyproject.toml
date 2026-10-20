@@ -1,11 +1,16 @@
 [project]
-name = "example"
+name = "RAG"
 version = "1.0.0"
 requires-python = ">=3.10"
 dependencies = [
+    "bm25s>=0.3.13",
     "fire>=0.7.1",
     "langchain>=1.4.4",
     "langchain-community>=0.4.2",
+    "langchain-huggingface>=1.2.3",
+    "torch>=2.14.1",
+    "tqdm>=4.70.1",
+    "transformers>=5.20.1",
     "typer>=0.27.3",
     "unstructured>=0.18.32",
 ]
@@ -24,7 +29,7 @@ ignore_missing_imports = true
 disallow_untyped_defs = true
 check_untyped_defs = true
 explicit_package_bases = true
-mypy_path = "src"
+mypy_path = "."
 plugins = []
 
 [dependency-groups]

@@ -1,27 +1,22 @@
 from src.loader import load_and_split_files
 from src.type_checker import cli_safe, PositiveInt
-from src.data_models import MinimalSource, StudentSearchResults, \
-    MinimalSearchResults, RagDataset, UnansweredQuestion, MinimalAnswer, \
-    StudentSearchResultsAndAnswer
+from src.data_models import UnansweredQuestion, AnsweredQuestion, \
+    MinimalAnswer, StudentSearchResultsAndAnswer
 
-from pydantic import BaseModel, ValidationError
-from functools import cache
+from src.helper import save_json, load_search_results, \
+    load_json_dataset, index_chunks, get_search, generate_answer, \
+    print_search_result, retrieve, load_retriever, get_llm, recall
+
 from pathlib import Path
 from tqdm import tqdm
-from typing import Any
-
-from langchain_huggingface import HuggingFacePipeline
-from langchain_core.documents import Document
 
 import fire
-import bm25s
 
 
 INDEX_DIR = "data/processed/"
 RAW_DIR = "data/raw/"
-MAX_CONTEXT_CHARS = 10000
-
-Record = dict[str, Any]
+MAX_SOURCE_LENGTH = 2000
+RECALL_KS = (1, 3, 5, 10)
 
 
 class Rag:
@@ -35,6 +30,7 @@ class Rag:
         answer <query> [--k <int>]
         answer_dataset --student_search_results_path <path>
                        --save_directory <dir>
+        evaluate --student_search_results_path <path> --dataset_path <path>
 
     Run 'COMMAND --help' for details on one command.
     """
@@ -55,88 +51,11 @@ class Rag:
                   "Could not load any files.")
             return
 
-        cls._index_chunks(chunks, INDEX_DIR)
+        index_chunks(chunks, INDEX_DIR)
         print(f"Ingestion complete! Indices saved under {INDEX_DIR}")
 
-    @staticmethod
-    def _index_chunks(chunks: list[Document], index_dir: str) -> None:
-        """Tokenize the chunks, build the BM25 index and save it."""
-        records = [
-            {"text": c.page_content,
-             "file_path": c.metadata["source"],
-             "first_character_index": c.metadata["start_index"],
-             "last_character_index": c.metadata["end_index"]
-             } for c in chunks]
-
-        tokens = bm25s.tokenize(
-            [r["text"] for r in records],
-            show_progress=True, leave=False)
-
-        retriever = bm25s.BM25()
-        retriever.index(tokens, show_progress=True, leave_progress=False)
-        retriever.save(index_dir, corpus=records)
-
-    @staticmethod
-    def _load_retriever() -> bm25s.BM25 | None:
-        """Load the saved index, or None if it does not exist."""
-        try:
-            return bm25s.BM25.load(INDEX_DIR, load_corpus=True)
-        except OSError:
-            print(f"Error: no index found under {INDEX_DIR}. "
-                  "Run the 'index' command first.")
-            return None
-
-    @classmethod
-    def _retrieve(cls, queries: list[str], k: int
-                  ) -> list[list[Record]] | None:
-        """Return the top-k chunk records of each query, best first."""
-        retriever = cls._load_retriever()
-        if retriever is None:
-            return None
-
-        progress = len(queries) > 1
-        tokens = bm25s.tokenize(
-            queries, show_progress=progress, leave=False
-        )
-
-        docs, _ = retriever.retrieve(
-            tokens, k=min(k, len(retriever.corpus)),
-            show_progress=progress, leave_progress=False
-        )
-        return [list(doc) for doc in docs]
-
-    @classmethod
-    def _get_search(cls, questions: list[UnansweredQuestion], k: int
-                    ) -> StudentSearchResults | None:
-        """Retrieve the sources of every question."""
-        if not questions:
-            print("Error: no queries given.")
-            return None
-
-        records = cls._retrieve([q.question for q in questions], k)
-        if records is None:
-            return None
-
-        try:
-            results = [
-                MinimalSearchResults(
-                    question_id=q.question_id,
-                    question=q.question,
-                    retrieved_sources=[
-                        MinimalSource(
-                            file_path=r["file_path"],
-                            first_character_index=r["first_character_index"],
-                            last_character_index=r["last_character_index"])
-                        for r in chunks])
-                for q, chunks in zip(questions, records)]
-            return StudentSearchResults(k=k, search_results=results)
-        except ValidationError as e:
-            print(e)
-            return None
-
-    @classmethod
     @cli_safe
-    def search(cls, query: str, k: PositiveInt = 5) -> None:
+    def search(query: str, k: PositiveInt = 5) -> None:
         """Print the top-k source locations of a single query.
 
         Args:
@@ -147,14 +66,15 @@ class Rag:
             print("Error: the query is empty.")
             return
 
-        results = cls._get_search([UnansweredQuestion(question=query)], k)
+        results = get_search([UnansweredQuestion(question=query)], k)
         if results:
-            cls._print_search_result(results)
+            print_search_result(results)
 
-    @classmethod
     @cli_safe
     def search_dataset(
-            cls, dataset_path: str, save_directory: str, k: PositiveInt = 5
+        dataset_path: str,
+        save_directory: str,
+        k: PositiveInt = 5
     ) -> None:
         """Search a whole dataset and save the StudentSearchResults JSON.
 
@@ -163,49 +83,23 @@ class Rag:
             save_directory: Directory where the result file is written.
             k: Number of sources to return per question.
         """
-        dataset = cls._load_json_dataset(dataset_path)
+        dataset = load_json_dataset(dataset_path)
         if dataset is None:
             return
 
-        results = cls._get_search(dataset.rag_questions, k)
+        results = get_search(dataset.rag_questions, k)
         if results is None:
             return
 
-        cls._save_json(results, save_directory, Path(dataset_path).name,
-                       "student_search_results")
-
-    @staticmethod
-    @cache
-    def _llm() -> HuggingFacePipeline:
-        """Load the model once and reuse it."""
-        return HuggingFacePipeline.from_model_id(
-            model_id="Qwen/Qwen3-0.6B", task="text-generation",
-            pipeline_kwargs={"max_new_tokens": 300, "do_sample": False,
-                             "return_full_text": False})
-
-    @classmethod
-    def _generate_answer(cls, query: str, chunks: list[Record]) -> str:
-        """Answer the query from the given chunks only."""
-        context = "\n\n".join(
-            f"file_path: '{c['file_path']}' text: '{c['text']}'"
-            for c in chunks)[:MAX_CONTEXT_CHARS]
-
-        prompt = (
-            "Answer the question using only the context. Be specific: copy "
-            "exact names, flags, commands and values from the context. "
-            "If the context does not contain the answer, say so."
-            f"\n\nContext:\n{context}\n\nQuestion: {query}"
+        save_json(
+            results,
+            save_directory,
+            Path(dataset_path).name,
+            "student_search_results"
         )
 
-        llm = cls._llm()
-        chat = llm.pipeline.tokenizer.apply_chat_template(
-            [{"role": "user", "content": prompt}],
-            tokenize=False, add_generation_prompt=True, enable_thinking=False)
-        return str(llm.invoke(chat)).strip()
-
-    @classmethod
     @cli_safe
-    def answer(cls, query: str, k: PositiveInt = 5) -> None:
+    def answer(query: str, k: PositiveInt = 5) -> None:
         """Print the answer to a single query.
 
         Args:
@@ -216,16 +110,15 @@ class Rag:
             print("Error: the query is empty.")
             return
 
-        records = cls._retrieve([query], k)
+        records = retrieve([query], k)
         if records is None:
             return
 
-        print(cls._generate_answer(query, records[0]))
+        print(generate_answer(query, records[0]))
 
-    @classmethod
     @cli_safe
     def answer_dataset(
-            cls, student_search_results_path: str, save_directory: str
+            student_search_results_path: str, save_directory: str
     ) -> None:
         """Answer every question of a search-results file and save the JSON.
 
@@ -233,15 +126,12 @@ class Rag:
             student_search_results_path: JSON file made by search_dataset.
             save_directory: Directory where the result file is written.
         """
-        try:
-            with open(student_search_results_path, "r") as f:
-                search_results = StudentSearchResults.model_validate_json(
-                    f.read())
-        except (OSError, ValidationError) as e:
-            print(f"Error: cannot read {student_search_results_path}: {e}")
+        search_results = load_search_results(
+            student_search_results_path)
+        if search_results is None:
             return
 
-        retriever = cls._load_retriever()
+        retriever = load_retriever()
         if retriever is None:
             return
 
@@ -253,7 +143,7 @@ class Rag:
         questions = search_results.search_results
         print(f"Loaded {len(questions)} questions")
         print("Loading model...")
-        cls._llm()
+        get_llm()
 
         answered = []
         for result in tqdm(questions, desc="Answering", unit="question"):
@@ -263,46 +153,61 @@ class Rag:
             chunks = [chunk_by_span[s] for s in spans if s in chunk_by_span]
             answered.append(MinimalAnswer(
                 **result.model_dump(),
-                answer=cls._generate_answer(result.question, chunks)))
+                answer=generate_answer(result.question, chunks)))
 
         output = StudentSearchResultsAndAnswer(
             k=search_results.k, search_results=answered)
-        cls._save_json(output, save_directory,
-                       Path(student_search_results_path).name,
-                       "student_search_results_and_answer")
+        save_json(
+            output, save_directory,
+            Path(student_search_results_path).name,
+            "student_search_results_and_answer"
+        )
 
-    @staticmethod
-    def _print_search_result(stud_search: StudentSearchResults) -> None:
-        """Print one 'path [first:last]' line per retrieved source."""
-        for result in stud_search.search_results[0].retrieved_sources:
-            print(f"{result.file_path} "
-                  f"[{result.first_character_index}:"
-                  f"{result.last_character_index}]")
-
-    @staticmethod
-    def _save_json(
-            result: BaseModel, save_directory: str, filename: str, label: str
+    @cli_safe
+    def evaluate(
+        student_search_results_path: str, dataset_path: str
     ) -> None:
-        """Write a model as JSON to <save_directory>/<filename>."""
-        path = Path(save_directory) / filename
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path, "w") as f:
-                f.write(result.model_dump_json(indent=4))
-        except OSError as e:
-            print(f"Error: cannot write {path}: {e}")
-            return
-        print(f"Saved {label} to {path}")
+        """Print the recall@k of search results against a ground truth.
 
-    @staticmethod
-    def _load_json_dataset(dataset_path: str) -> RagDataset | None:
-        """Load a question dataset, answered or not, or None on error."""
-        try:
-            with open(dataset_path, "r") as f:
-                return RagDataset.model_validate_json(f.read())
-        except (OSError, ValidationError) as e:
-            print(f"Error: cannot read dataset {dataset_path}: {e}")
-            return None
+        Args:
+            student_search_results_path: JSON file made by search_dataset.
+            dataset_path: JSON file of answered questions (ground truth).
+        """
+        student = load_search_results(student_search_results_path)
+        dataset = load_json_dataset(dataset_path)
+        if student is None or dataset is None:
+            return
+
+        truth = [q for q in dataset.rag_questions
+                 if isinstance(q, AnsweredQuestion) and q.sources]
+        if not truth:
+            print("Error: the dataset has no answered questions.")
+            return
+
+        retrieved = {r.question_id: r.retrieved_sources
+                     for r in student.search_results}
+        too_long = sum(
+            (s.last_character_index - s.first_character_index)
+            > MAX_SOURCE_LENGTH
+            for sources in retrieved.values() for s in sources)
+        missing = sum(q.question_id not in retrieved for q in truth)
+        if too_long:
+            print(f"Warning: {too_long} sources are longer than "
+                  f"{MAX_SOURCE_LENGTH} characters.")
+        if missing:
+            print(f"Warning: {missing} questions have no search results.")
+
+        ks = sorted({k for k in RECALL_KS if k <= student.k} | {student.k})
+        recalls: dict[int, list[float]] = {k: [] for k in ks}
+        for q in truth:
+            sources = retrieved.get(q.question_id, [])
+            for k in ks:
+                recalls[k].append(recall(q.sources, sources[:k]))
+
+        print("Evaluation Results")
+        print("=" * 40)
+        print(" ".join(f"Recall@{k}: {sum(r) / len(r):.3f}"
+                       for k, r in recalls.items()))
 
 
 if __name__ == "__main__":
