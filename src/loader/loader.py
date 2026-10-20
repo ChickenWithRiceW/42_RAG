@@ -1,9 +1,11 @@
 import re
 import os
+
 from collections.abc import Iterator
 from pathlib import Path
-from langchain_text_splitters import RecursiveCharacterTextSplitter as RCTS, \
-    Language
+from tqdm import tqdm
+from langchain_text_splitters import (
+    RecursiveCharacterTextSplitter as RCTS, Language)
 from langchain_core.documents import Document
 
 # Dirs we ignore.
@@ -19,13 +21,13 @@ IGNORE_DIRS = re.compile(
     """,
     re.VERBOSE)
 
-# TODO: Only allow .py, .txt, .md
+# Only allow .py, .txt, .md (plus Makefile / Dockerfile). No hidden files.
 ALLOWED_FILES = re.compile(
     r"""
     (?!\.)
     (
-        .+\.(py|txt|md)
-      | Makefile | Dockerfile
+    .+\.(py|txt|md)
+    | Makefile | Dockerfile
     )
     """,
     re.VERBOSE | re.IGNORECASE,
@@ -40,6 +42,7 @@ LANG = {".py": Language.PYTHON,
 
 def _iter_files(root: Path, extensions: set[str] | None = None
                 ) -> Iterator[Path]:
+    """Yield every allowed file under root, skipping ignored folders."""
     for dirpath, dirnames, filenames in os.walk(root):
         # Folder filtering.
         dirnames[:] = [d for d in dirnames if not IGNORE_DIRS.fullmatch(d)]
@@ -55,9 +58,13 @@ def _iter_files(root: Path, extensions: set[str] | None = None
 
 
 def load_and_split_files(
-    raw_data_path: str, max_chunk_size: int,
+        raw_data_path: str, max_chunk_size: int,
         chunk_overlap: int) -> list[Document] | None:
+    """Read every allowed file under raw_data_path and split it in chunks.
 
+    Python files and Markdown/text files each use their own splitter.
+    Each chunk keeps its file path and character span in its metadata.
+    """
     cfg = dict(
         chunk_size=max_chunk_size,
         chunk_overlap=chunk_overlap,
@@ -73,17 +80,16 @@ def load_and_split_files(
     root = Path(raw_data_path)
     chunks = []
 
-    for p in _iter_files(root=root):
-        if not p.is_file() or ".git" in p.parts:
-            continue
+    # Listing the files for the progress bar.
+    files = [p for p in _iter_files(root=root)
+             if p.is_file() and ".git" not in p.parts]
+
+    for p in tqdm(files, desc="Chunking", unit="file", leave=False):
         try:
             text = p.read_text(encoding="utf-8")
-        except OSError as e:
-            print(e)
-            return None
-
-        except UnicodeDecodeError as e:
-            print(e)
+        except (OSError, UnicodeDecodeError) as e:
+            # Print without breaking the progress bar.
+            tqdm.write(f"Skipping {p}: {e}")
             continue
 
         rel = p.relative_to(root)
@@ -94,4 +100,5 @@ def load_and_split_files(
 
             c.page_content = f"File: {rel}\n{c.page_content}"
             chunks.append(c)
+    tqdm.close(p)
     return chunks
