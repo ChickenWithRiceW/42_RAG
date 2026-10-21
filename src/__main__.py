@@ -35,9 +35,9 @@ class Rag:
     Run 'COMMAND --help' for details on one command.
     """
 
-    @classmethod
+    @staticmethod
     @cli_safe
-    def index(cls, max_chunk_size: PositiveInt = 2000) -> None:
+    def index(max_chunk_size: PositiveInt = 2000) -> None:
         """Chunk data/raw/ and build the BM25 index.
 
         Args:
@@ -54,6 +54,7 @@ class Rag:
         index_chunks(chunks, INDEX_DIR)
         print(f"Ingestion complete! Indices saved under {INDEX_DIR}")
 
+    @staticmethod
     @cli_safe
     def search(query: str, k: PositiveInt = 5) -> None:
         """Print the top-k source locations of a single query.
@@ -70,6 +71,7 @@ class Rag:
         if results:
             print_search_result(results)
 
+    @staticmethod
     @cli_safe
     def search_dataset(
         dataset_path: str,
@@ -98,6 +100,7 @@ class Rag:
             "student_search_results"
         )
 
+    @staticmethod
     @cli_safe
     def answer(query: str, k: PositiveInt = 5) -> None:
         """Print the answer to a single query.
@@ -116,6 +119,7 @@ class Rag:
 
         print(generate_answer(query, records[0]))
 
+    @staticmethod
     @cli_safe
     def answer_dataset(
             student_search_results_path: str, save_directory: str
@@ -163,6 +167,7 @@ class Rag:
             "student_search_results_and_answer"
         )
 
+    @staticmethod
     @cli_safe
     def evaluate(
         student_search_results_path: str, dataset_path: str
@@ -186,14 +191,19 @@ class Rag:
 
         retrieved = {r.question_id: r.retrieved_sources
                      for r in student.search_results}
+
         too_long = sum(
             (s.last_character_index - s.first_character_index)
             > MAX_SOURCE_LENGTH
-            for sources in retrieved.values() for s in sources)
+            for sources in retrieved.values() for s in sources
+        )
+
         missing = sum(q.question_id not in retrieved for q in truth)
+
         if too_long:
             print(f"Warning: {too_long} sources are longer than "
                   f"{MAX_SOURCE_LENGTH} characters.")
+
         if missing:
             print(f"Warning: {missing} questions have no search results.")
 

@@ -101,5 +101,4 @@ def load_and_split_files(
 
             c.page_content = f"File: {rel}\n{c.page_content}"
             chunks.append(c)
-    tqdm.close(p)
     return chunks
