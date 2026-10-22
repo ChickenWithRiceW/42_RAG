@@ -1,14 +1,14 @@
 ENTRY = src
-CONFIG = example.txt
+ARGS ?=
 
 install:
 	uv sync
 
 run: install
-	uv run python $(ENTRY) $(CONFIG)
+	uv run python -m $(ENTRY) $(ARGS)
 
 debug: install
-	uv run python -m pdb $(ENTRY) $(CONFIG)
+	uv run python -m pdb $(ENTRY) $(ARGS)
 
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} +
